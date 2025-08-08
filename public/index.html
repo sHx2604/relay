@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Relay Controller</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <i class="fas fa-microchip"></i>
+                <h1>Smart<span>Relay</span> Controller</h1>
+            </div>
+            <div class="connection-status">
+                <div class="status-item" id="wifiStatus">
+                    <i class="fas fa-wifi"></i>
+                    <span>Internet: Checking...</span>
+                </div>
+                <div class="status-item" id="mqttStatus">
+                    <i class="fas fa-cloud"></i>
+                    <span>MQTT: Disconnected</span>
+                </div>
+                <div class="status-item" id="deviceStatus">
+                    <i class="fas fa-plug"></i>
+                    <span>Device: Offline</span>
+                </div>
+            </div>
+            <button class="settings-btn" id="settingsBtn">
+                <i class="fas fa-cog"></i>
+            </button>
+        </header>
+
+        <!-- Main Content -->
+        <main class="content">
+            <!-- Relay Controls Section -->
+            <section class="card">
+                <h2><i class="fas fa-sliders-h"></i> Relay Control Dashboard</h2>
+                <div class="relay-grid" id="relayGrid">
+                    <!-- Relay cards will be generated here -->
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>© 2023 Smart Relay Controller | IoT Automation System</p>
+            <div class="system-info">
+                <span id="ipAddress"><i class="fas fa-network-wired"></i> IP: -</span>
+                <span id="firmwareVersion"><i class="fas fa-code"></i> Firmware: v2.1.0</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Modal for Settings -->
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <span class="close-btn" id="closeSettings">&times;</span>
+            <h3 id="modalTitle"><i class="fas fa-cog"></i> MQTT Settings</h3>
+            
+            <div class="modal-form">
+                <div class="form-group">
+                    <label for="mqttBroker"><i class="fas fa-server"></i> Broker URL</label>
+                    <input type="text" id="mqttBroker" class="form-control" placeholder="wss://broker.example.com">
+                </div>
+                
+                <div class="form-group">
+                    <label for="mqttPort"><i class="fas fa-plug"></i> Port</label>
+                    <input type="number" id="mqttPort" class="form-control" placeholder="8883" value="8883">
+                </div>
+                
+                <div class="form-group">
+                    <label for="mqttUsername"><i class="fas fa-user"></i> Username</label>
+                    <input type="text" id="mqttUsername" class="form-control" placeholder="MQTT Username">
+                </div>
+                
+                <div class="form-group">
+                    <label for="mqttPassword"><i class="fas fa-key"></i> Password</label>
+                    <input type="password" id="mqttPassword" class="form-control" placeholder="MQTT Password">
+                </div>
+                
+                <button id="saveSettingsBtn" class="btn btn-primary">
+                    <i class="fas fa-save"></i> Save Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Notifications -->
+    <div class="modal" id="notificationModal">
+        <div class="modal-content">
+            <span class="close-btn" id="closeModal">&times;</span>
+            <h3 id="modalTitle">System Notification</h3>
+            <p id="modalMessage"></p>
+            <button id="modalConfirm" class="btn btn-primary">OK</button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

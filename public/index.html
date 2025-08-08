@@ -60,28 +60,28 @@
         <div class="modal-content">
             <span class="close-btn" id="closeSettings">&times;</span>
             <h3 id="modalTitle"><i class="fas fa-cog"></i> MQTT Settings</h3>
-
+            
             <div class="modal-form">
                 <div class="form-group">
                     <label for="mqttBroker"><i class="fas fa-server"></i> Broker URL</label>
                     <input type="text" id="mqttBroker" class="form-control" placeholder="wss://broker.example.com">
                 </div>
-
+                
                 <div class="form-group">
                     <label for="mqttPort"><i class="fas fa-plug"></i> Port</label>
                     <input type="number" id="mqttPort" class="form-control" placeholder="8883" value="8883">
                 </div>
-
+                
                 <div class="form-group">
                     <label for="mqttUsername"><i class="fas fa-user"></i> Username</label>
                     <input type="text" id="mqttUsername" class="form-control" placeholder="MQTT Username">
                 </div>
-
+                
                 <div class="form-group">
                     <label for="mqttPassword"><i class="fas fa-key"></i> Password</label>
                     <input type="password" id="mqttPassword" class="form-control" placeholder="MQTT Password">
                 </div>
-
+                
                 <button id="saveSettingsBtn" class="btn btn-primary">
                     <i class="fas fa-save"></i> Save Settings
                 </button>
@@ -92,20 +92,13 @@
     <!-- Modal for Notifications -->
     <div class="modal" id="notificationModal">
         <div class="modal-content">
-            <span class="close-btn" id="closeNotification">&times;</span>
-            <i id="notificationIcon" class="fas fa-info-circle"></i>
-            <p id="notificationMessage"></p>
+            <span class="close-btn" id="closeModal">&times;</span>
+            <h3 id="modalTitle">System Notification</h3>
+            <p id="modalMessage"></p>
+            <button id="modalConfirm" class="btn btn-primary">OK</button>
         </div>
     </div>
 
-    <script>
-        // Auto-detect environment and load appropriate script
-        const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-        const scriptSrc = isLocalhost ? 'script.js' : 'script-netlify.js';
-
-        const script = document.createElement('script');
-        script.src = scriptSrc;
-        document.head.appendChild(script);
-    </script>
+    <script src="script.js"></script>
 </body>
 </html>

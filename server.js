@@ -5,6 +5,17 @@ const mqtt = require('mqtt');
 const WebSocket = require('ws');
 const http = require('http');
 const path = require('path');
+const mysql = require('mysql2/promise');
+const session = require('express-session');
+
+// Setup koneksi pool MySQL
+const db = mysql.createPool({
+  host: process.env.MYSQL_HOST,
+  user: process.env.MYSQL_USER,
+  password: process.env.MYSQL_PASSWORD,
+  database: process.env.MYSQL_DATABASE,
+  port: process.env.MYSQL_PORT || 3306,
+});
 
 const app = express();
 const server = http.createServer(app);
@@ -14,19 +25,65 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Session middleware
+app.use(session({
+  secret: 'supersecret123',
+  resave: false,
+  saveUninitialized: true
+}));
+
+// Fungsi pembentuk topic MQTT spesifik user
+function getTopic(username, path) {
+  return `${username}/${path}`;
+}
+
+// REGISTER API
+app.post('/api/register', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Username dan password wajib diisi' });
+  try {
+    const [rows] = await db.query('SELECT id FROM users WHERE username = ?', [username]);
+    if (rows.length > 0) return res.status(409).json({ error: 'Username sudah terdaftar' });
+    const [insertResult] = await db.query('INSERT INTO users (username, password) VALUES (?, ?)', [username, password]);
+    const userId = insertResult.insertId;
+    // Otomatis isi 8 relay default, nama Relay 1 dst
+    const relays = Array(8).fill(0).map((_,i)=>[userId, i, `Relay ${i+1}`, 'off']);
+    await db.query('INSERT INTO relays (user_id, relay_index, name, status) VALUES ?',[relays]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// LOGIN API
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Username dan password wajib diisi' });
+  try {
+    const [rows] = await db.query('SELECT id, password FROM users WHERE username = ?', [username]);
+    if (!rows.length || rows[0].password !== password) return res.status(401).json({ error: 'Username/password salah' });
+    req.session.userId = rows[0].id;
+    req.session.username = username;
+    // Subscribe ke topic status user jika belum
+    subscribeUserStatusTopic(username);
+    res.json({ success: true, username });
+  } catch (e) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Middleware proteksi API
+function requireLogin(req, res, next) {
+  if (!req.session.userId) return res.status(401).json({ error: 'Unauthorized' });
+  next();
+}
+
 // Konfigurasi MQTT
 const MQTT_BROKER = process.env.MQTT_BROKER || 'mqtts://4bbdfa736ca64112bb38a14789942a8a.s1.eu.hivemq.cloud';
 const MQTT_PORT = process.env.MQTT_PORT || 8883;
 const MQTT_USER = process.env.MQTT_USER || 'pepeq123';
 const MQTT_PASS = process.env.MQTT_PASS || '123098@Qwe';
-
-const RELAY_COMMAND_TOPIC = 'home/relays/command';
-const RELAY_STATUS_TOPIC = 'home/relays/status';
-const TIMER_SET_TOPIC = 'home/timer/set';
-
-// Simpan state relay dan timer
-let relayStates = Array(8).fill('off');
-let activeTimers = {};
 
 // Koneksi ke MQTT broker
 const mqttOptions = {
@@ -41,22 +98,31 @@ const mqttOptions = {
 
 const mqttClient = mqtt.connect(MQTT_BROKER, mqttOptions);
 
+// Set untuk tracking topic status yang sudah di-subscribe
+const subscribedStatusTopics = new Set();
+
+function subscribeUserStatusTopic(username) {
+  const topic = getTopic(username, 'relays/status');
+  if (!subscribedStatusTopics.has(topic)) {
+    mqttClient.subscribe(topic, (err) => {
+      if (err) {
+        console.error('Failed to subscribe to', topic, err);
+      } else {
+        subscribedStatusTopics.add(topic);
+        console.log('Successfully subscribed to', topic);
+        // Request current status dari device user saat subscribe
+        const requestTopic = getTopic(username, 'relays/request_status');
+        mqttClient.publish(requestTopic, JSON.stringify({
+          action: 'get_status'
+        }));
+      }
+    });
+  }
+}
+
 mqttClient.on('connect', () => {
   console.log('Connected to MQTT broker');
-  console.log(`Subscribing to topics: ${RELAY_STATUS_TOPIC}`);
-  mqttClient.subscribe(RELAY_STATUS_TOPIC, (err) => {
-    if (err) {
-      console.error('Failed to subscribe to', RELAY_STATUS_TOPIC, err);
-    } else {
-      console.log('Successfully subscribed to', RELAY_STATUS_TOPIC);
-
-      // Request current status dari device saat startup
-      console.log('Requesting current relay status...');
-      mqttClient.publish('home/relays/request_status', JSON.stringify({
-        action: 'get_status'
-      }));
-    }
-  });
+  // Tidak subscribe ke topic global, subscribe per user saat login
 });
 
 mqttClient.on('error', (error) => {
@@ -71,241 +137,216 @@ mqttClient.on('reconnect', () => {
   console.log('MQTT Client reconnecting...');
 });
 
-mqttClient.on('message', (topic, message) => {
+mqttClient.on('message', async (topic, message) => {
   try {
-    const data = JSON.parse(message.toString());
-
-    if (topic === RELAY_STATUS_TOPIC && Array.isArray(data.states)) {
-      // Update relay states
-      relayStates = data.states;
-
-      // Broadcast ke semua client WebSocket
-      broadcast({ type: 'status', states: relayStates });
+    // Cek apakah topic adalah status milik user tertentu
+    // Format: {username}/relays/status
+    const match = topic.match(/^([^/]+)\/relays\/status$/);
+    if (match) {
+      const username = match[1];
+      const data = JSON.parse(message.toString());
+      if (Array.isArray(data.states)) {
+        // Update relay states di DB untuk user ini
+        // Ambil userId dari username
+        const [userRows] = await db.query('SELECT id FROM users WHERE username=?', [username]);
+        if (userRows.length) {
+          const userId = userRows[0].id;
+          const states = data.states;
+          // Ambil semua relay milik user, update status sesuai index
+          const [userRelays] = await db.query('SELECT id, relay_index FROM relays WHERE user_id=?', [userId]);
+          for (const relay of userRelays) {
+            const idx = relay.relay_index;
+            if (typeof states[idx] === 'string') {
+              await db.query('UPDATE relays SET status=? WHERE id=?', [states[idx], relay.id]);
+            }
+          }
+          // Broadcast ke user terkait
+          broadcastToUser(userId, await getUserStatus(userId));
+        }
+      }
     }
   } catch (error) {
     console.error('Error processing MQTT message:', error);
   }
 });
 
-// Fungsi untuk broadcast ke semua WebSocket clients
-function broadcast(message) {
+// Fungsi untuk broadcast ke semua WebSocket clients sesuai user
+function broadcastToUser(userId, message) {
   wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
+    if (client.readyState === WebSocket.OPEN && client.userId === userId) {
       client.send(JSON.stringify(message));
     }
   });
 }
 
-// WebSocket server
-wss.on('connection', (ws) => {
-  console.log('New WebSocket client connected');
-
-  // Kirim status saat ini ke client baru
-  const initData = {
-    type: 'init',
-    states: relayStates,
-    timers: Object.values(activeTimers).map(t => ({
+// Fungsi untuk mengambil status user (relays dan timers)
+async function getUserStatus(userId) {
+  const [relays] = await db.query('SELECT id, relay_index, name, status FROM relays WHERE user_id=? ORDER BY relay_index', [userId]);
+  const [timers] = await db.query(
+    `SELECT t.id, t.relay_id, t.duration, t.end_time, r.relay_index
+     FROM timers t JOIN relays r ON t.relay_id = r.id
+     WHERE t.user_id=?`, [userId]);
+  return {
+    type: 'status',
+    relays,
+    timers: timers.map(t => ({
       id: t.id,
-      relayId: t.relayId,
+      relayId: t.relay_index,
       duration: t.duration,
-      remaining: Math.max(0, Math.floor((t.endTime - Date.now()) / 1000))
+      remaining: Math.max(0, Math.floor((t.end_time - Date.now()) / 1000))
     }))
   };
+}
 
-  console.log('Sending init data to new client:', initData);
-  ws.send(JSON.stringify(initData));
+// Broadcast ke semua user: update status dan timer
+async function broadcastAllUsers() {
+  // Ambil semua userId yang sedang terkoneksi
+  const userIds = new Set();
+  wss.clients.forEach(client => {
+    if (client.userId) userIds.add(client.userId);
+  });
+  for (const userId of userIds) {
+    broadcastToUser(userId, await getUserStatus(userId));
+  }
+}
+
+// WebSocket server
+wss.on('connection', async (ws, req) => {
+  // Ambil session dari cookie
+  let userId = null;
+  ws.userId = null;
+
+  ws.on('message', async (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.type === 'auth' && data.userId) {
+        ws.userId = data.userId;
+        // Ambil username dari userId
+        const [userRows] = await db.query('SELECT username FROM users WHERE id=?', [ws.userId]);
+        if (userRows.length) {
+          const username = userRows[0].username;
+          subscribeUserStatusTopic(username);
+        }
+        // Kirim data awal
+        ws.send(JSON.stringify(await getUserStatus(ws.userId)));
+      }
+    } catch (e) {}
+  });
 
   ws.on('close', () => {
-    console.log('WebSocket client disconnected');
+    // Nothing
   });
 });
 
-// API untuk mengontrol relay
-app.post('/api/control', (req, res) => {
+// Fungsi mendapatkan semua relay milik user (filter user)
+app.get('/api/relays', requireLogin, async (req, res) => {
+  try {
+    const [relays] = await db.query('SELECT id, relay_index, name, status FROM relays WHERE user_id=? ORDER BY relay_index', [req.session.userId]);
+    res.json(relays);
+  } catch (e) {
+    res.status(500).json({ error: 'DB error' });
+  }
+});
+
+// API kontrol relay, update DB status relay
+app.post('/api/control', requireLogin, async (req, res) => {
   const { relayId, action } = req.body;
-
-  if (typeof relayId !== 'number' || relayId < 0 || relayId > 7) {
-    return res.status(400).json({ error: 'Invalid relay ID' });
-  }
-
-  if (!['on', 'off'].includes(action)) {
-    return res.status(400).json({ error: 'Invalid action' });
-  }
-
-  // Kirim perintah ke MQTT
+  // relayId: index relay (0-7)
+  if(!['on','off'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
+  const [relays] = await db.query('SELECT * FROM relays WHERE user_id=? AND relay_index=?', [req.session.userId, relayId]);
+  if (!relays.length) return res.status(404).json({ error: 'Relay not found' });
+  await db.query('UPDATE relays SET status=? WHERE id=?', [action, relays[0].id]);
+  // Kirim perintah ke MQTT dengan topic user
   const command = {
     relays: [relayId],
     action: action
   };
-
-  console.log(`Publishing to ${RELAY_COMMAND_TOPIC}:`, command);
-  mqttClient.publish(RELAY_COMMAND_TOPIC, JSON.stringify(command), (err) => {
+  const userTopic = getTopic(req.session.username, 'relays/command');
+  mqttClient.publish(userTopic, JSON.stringify(command), (err) => {
     if (err) {
       console.error('Failed to publish relay command:', err);
-    } else {
-      console.log('Relay command published successfully');
-
-      // Optimistic update - langsung update state di server
-      relayStates[relayId] = action;
-
-      // Jika relay dimatikan secara manual, hapus semua timer untuk relay ini
-      if (action === 'off') {
-        // Cari semua timer terkait relay ini
-        const relayTimers = Object.entries(activeTimers).filter(([_timerId, timer]) => timer.relayId === relayId);
-        relayTimers.forEach(([timerId, timer]) => {
-          delete activeTimers[timerId]; // Hapus timer dari backend
-          broadcast({ type: 'timer_removed', timerId, relayId }); // Informasi ke semua client untuk hapus timer display
-        });
-      }
-
-      console.log(`Optimistic update: relay ${relayId} = ${action}`);
-      console.log('Current relay states:', relayStates);
-
-      // Broadcast ke semua client
-      broadcast({
-        type: 'status',
-        states: relayStates
-      });
     }
   });
-
+  // Jika relay dimatikan, hapus timer terkait
+  if (action === 'off') {
+    await db.query(
+      `DELETE FROM timers WHERE user_id=? AND relay_id=?`,
+      [req.session.userId, relays[0].id]
+    );
+  }
+  // Broadcast ke user
+  broadcastAllUsers();
   res.json({ success: true });
 });
 
-// API untuk mengatur timer
-app.post('/api/timer', (req, res) => {
-  const { relayId, duration } = req.body;
-
-  if (typeof relayId !== 'number' || relayId < 0 || relayId > 7) {
-    return res.status(400).json({ error: 'Invalid relay ID' });
-  }
-
-  if (typeof duration !== 'number' || duration < 1) {
-    return res.status(400).json({ error: 'Invalid duration' });
-  }
-
-  // Kirim perintah timer ke MQTT
-  const timerCommand = {
-    relayId,
-    duration
-  };
-
-  console.log(`Publishing timer to ${TIMER_SET_TOPIC}:`, timerCommand);
-  mqttClient.publish(TIMER_SET_TOPIC, JSON.stringify(timerCommand), (err) => {
-    if (err) {
-      console.error('Failed to publish timer command:', err);
-    } else {
-      console.log('Timer command published successfully');
-    }
-  });
-
-  // Auto turn ON relay ketika timer diset
-  console.log(`Auto turning ON relay ${relayId} for timer`);
-  mqttClient.publish(RELAY_COMMAND_TOPIC, JSON.stringify({
-    relays: [relayId],
-    action: 'on'
-  }));
-
-  // Update state di server
-  relayStates[relayId] = 'on';
-  console.log(`Timer set: relay ${relayId} turned ON`);
-
-  // Broadcast status update
-  broadcast({
-    type: 'status',
-    states: relayStates
-  });
-
-  // Simpan timer di server
-  const timerId = `timer_${Date.now()}`;
-  activeTimers[timerId] = {
-    id: timerId,
-    relayId,
-    duration,
-    startTime: Date.now(),
-    endTime: Date.now() + duration * 1000
-  };
-
-  // Broadcast timer baru
-  broadcast({
-    type: 'timer_added',
-    timer: {
-      ...activeTimers[timerId],
-      remaining: duration
-    }
-  });
-
-  res.json({ success: true, timerId });
+// API get all timer user
+app.get('/api/timers', requireLogin, async (req, res) => {
+  const [timers] = await db.query('SELECT * FROM timers WHERE user_id=?', [req.session.userId]);
+  res.json(timers);
 });
 
-// API untuk membatalkan timer
-app.delete('/api/timer/:id', (req, res) => {
+// Set timer
+app.post('/api/timer', requireLogin, async (req, res) => {
+  const { relayId, duration } = req.body;
+  // relayId = index
+  const [relays] = await db.query('SELECT * FROM relays WHERE user_id=? AND relay_index=?', [req.session.userId, relayId]);
+  if (!relays.length) return res.status(404).json({ error: 'Relay not found' });
+  const relay_id = relays[0].id;
+  const end_time = Date.now() + duration * 1000;
+  const [insert] = await db.query('INSERT INTO timers (user_id, relay_id, duration, end_time) VALUES (?, ?, ?, ?)', [req.session.userId, relay_id, duration, end_time]);
+  // Set relay ON juga
+  await db.query('UPDATE relays SET status=? WHERE id=?', ['on', relay_id]);
+  // Kirim perintah ke MQTT dengan topic user untuk timer set
+  const userTimerTopic = getTopic(req.session.username, 'timer/set');
+  mqttClient.publish(userTimerTopic, JSON.stringify({ relayId, duration }), (err) => {
+    if (err) {
+      console.error('Failed to publish timer set:', err);
+    }
+  });
+  // Broadcast ke user
+  broadcastAllUsers();
+  res.json({ success: true, timerId: insert.insertId });
+});
+
+// Cancel timer
+app.delete('/api/timer/:id', requireLogin, async (req,res)=>{
   const timerId = req.params.id;
-
-  if (activeTimers[timerId]) {
-    const relayId = activeTimers[timerId].relayId;
-    delete activeTimers[timerId];
-
-    // Broadcast pembatalan timer
-    broadcast({ type: 'timer_removed', timerId, relayId });
-
-    return res.json({ success: true });
-  }
-
-  res.status(404).json({ error: 'Timer not found' });
+  const [timers] = await db.query('SELECT * FROM timers WHERE id=? AND user_id=?', [timerId, req.session.userId]);
+  if (!timers.length) return res.status(404).json({ error: 'Timer not found' });
+  await db.query('DELETE FROM timers WHERE id=?', [timerId]);
+  // Broadcast ke user
+  broadcastAllUsers();
+  res.json({success:true});
 });
 
 // Jalankan timer check
-setInterval(() => {
+setInterval(async () => {
   const now = Date.now();
-  const completedTimers = [];
-  const timerUpdates = [];
-
-  // Periksa semua timer
-  for (const [timerId, timer] of Object.entries(activeTimers)) {
-    if (now >= timer.endTime) {
-      // Kirim perintah mati ke relay
-      console.log(`Timer completed for relay ${timer.relayId}, sending OFF command`);
-      mqttClient.publish(RELAY_COMMAND_TOPIC, JSON.stringify({
-        relays: [timer.relayId],
+  // Ambil semua timer yang sudah selesai
+  const [timers] = await db.query('SELECT t.id, t.user_id, t.relay_id, t.end_time, r.relay_index FROM timers t JOIN relays r ON t.relay_id = r.id WHERE t.end_time <= ?', [now]);
+  for (const timer of timers) {
+    // Matikan relay
+    await db.query('UPDATE relays SET status=? WHERE id=?', ['off', timer.relay_id]);
+    // Ambil username dari user_id
+    const [userRows] = await db.query('SELECT username FROM users WHERE id=?', [timer.user_id]);
+    if (userRows.length) {
+      const username = userRows[0].username;
+      // Kirim perintah ke MQTT dengan topic user
+      const offTopic = getTopic(username, 'relays/command');
+      mqttClient.publish(offTopic, JSON.stringify({
+        relays: [timer.relay_index],
         action: 'off'
-      }));
-
-      // Update state relay di server
-      relayStates[timer.relayId] = 'off';
-      console.log(`Timer completed: relay ${timer.relayId} set to OFF`);
-
-      // Tandai timer untuk dihapus
-      completedTimers.push(timerId);
-    } else {
-      // Siapkan update sisa waktu untuk client
-      const remaining = Math.max(0, Math.floor((timer.endTime - now) / 1000));
-      timerUpdates.push({
-        timerId: timerId,
-        relayId: timer.relayId,
-        remaining: remaining
+      }), (err) => {
+        if (err) {
+          console.error('Failed to publish relay off:', err);
+        }
       });
     }
+    // Hapus timer
+    await db.query('DELETE FROM timers WHERE id=?', [timer.id]);
   }
-
-  // Hapus timer yang sudah selesai
-  completedTimers.forEach(timerId => {
-    const relayId = activeTimers[timerId]?.relayId;
-    broadcast({ type: 'timer_completed', timerId, relayId });
-    delete activeTimers[timerId];
-  });
-
-  // Broadcast status update jika ada timer yang selesai (relay mati)
-  if (completedTimers.length > 0) {
-    broadcast({
-      type: 'status',
-      states: relayStates
-    });
-  }
-
-  // Kirim update timer yang masih aktif ke semua client
-  if (timerUpdates.length > 0) {
-    broadcast({ type: 'timer_updates', timers: timerUpdates });
+  if (timers.length > 0) {
+    broadcastAllUsers();
   }
 }, 1000);
 

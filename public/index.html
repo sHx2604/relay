@@ -8,7 +8,37 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="dashboard">
+    <div class="login-container" id="loginContainer" style="display:none">
+        <form id="loginForm">
+            <h2>LOGIN</h2>
+            <div class="form-group">
+                <label for="loginUsername">Username</label>
+                <input type="text" id="loginUsername" required />
+            </div>
+            <div class="form-group">
+                <label for="loginPassword">Password</label>
+                <input type="password" id="loginPassword" required />
+            </div>
+            <button type="submit">Login</button>
+            <div id="loginError" class="error"></div>
+            <p>Belum ada akun? <a href="#" id="showRegister">Daftar</a></p>
+        </form>
+        <form id="registerForm" style="display:none">
+            <h2>REGISTER</h2>
+            <div class="form-group">
+                <label for="registerUsername">Username</label>
+                <input type="text" id="registerUsername" required />
+            </div>
+            <div class="form-group">
+                <label for="registerPassword">Password</label>
+                <input type="password" id="registerPassword" required />
+            </div>
+            <button type="submit">Register</button>
+            <div id="registerError" class="error"></div>
+            <p>Sudah punya akun? <a href="#" id="showLogin">Login</a></p>
+        </form>
+    </div>
+    <div class="dashboard" style="display:none"><!-- awal dashboard disembunyikan default, hanya tampil setelah login -->
         <!-- Header -->
         <header class="header">
             <div class="logo">
@@ -55,28 +85,28 @@
         <div class="modal-content">
             <span class="close-btn" id="closeSettings">&times;</span>
             <h3 id="modalTitle"><i class="fas fa-cog"></i> MQTT Settings</h3>
-            
+
             <div class="modal-form">
                 <div class="form-group">
                     <label for="mqttBroker"><i class="fas fa-server"></i> Broker URL</label>
                     <input type="text" id="mqttBroker" class="form-control" placeholder="wss://broker.example.com">
                 </div>
-                
+
                 <div class="form-group">
                     <label for="mqttPort"><i class="fas fa-plug"></i> Port</label>
                     <input type="number" id="mqttPort" class="form-control" placeholder="8883" value="8883">
                 </div>
-                
+
                 <div class="form-group">
                     <label for="mqttUsername"><i class="fas fa-user"></i> Username</label>
                     <input type="text" id="mqttUsername" class="form-control" placeholder="MQTT Username">
                 </div>
-                
+
                 <div class="form-group">
                     <label for="mqttPassword"><i class="fas fa-key"></i> Password</label>
                     <input type="password" id="mqttPassword" class="form-control" placeholder="MQTT Password">
                 </div>
-                
+
                 <button id="saveSettingsBtn" class="btn btn-primary">
                     <i class="fas fa-save"></i> Save Settings
                 </button>
@@ -95,5 +125,6 @@
     </div>
 
     <script src="script.js"></script>
+    <!-- Semua logic login, register, dashboard ada di script.js. Tidak perlu <script> JS tambahan di index.html lagi.-->
 </body>
 </html>

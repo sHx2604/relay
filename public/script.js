@@ -23,10 +23,106 @@ let relays = Array(8).fill().map((_, i) => ({
 }));
 let ws = null;
 
+// Login/Register/Dashboard Logic
+function showLoginForm() {
+  document.querySelector('.dashboard').style.display = 'none';
+  document.getElementById('loginContainer').style.display = '';
+  document.getElementById('loginForm').style.display = '';
+  document.getElementById('registerForm').style.display = 'none';
+}
+function showRegisterForm() {
+  document.querySelector('.dashboard').style.display = 'none';
+  document.getElementById('loginContainer').style.display = '';
+  document.getElementById('loginForm').style.display = 'none';
+  document.getElementById('registerForm').style.display = '';
+}
+function showDashboardAfterLogin() {
+  document.querySelector('.dashboard').style.display = '';
+  document.getElementById('loginContainer').style.display = 'none';
+}
+
+// On load, decide what to show
+if (!localStorage.getItem('userLogin')) {
+  showLoginForm();
+} else {
+  showDashboardAfterLogin();
+}
+
+// Setup register/login link toggle
+if (document.getElementById('showRegister')) document.getElementById('showRegister').onclick = (e)=>{e.preventDefault();showRegisterForm();};
+if (document.getElementById('showLogin')) document.getElementById('showLogin').onclick = (e)=>{e.preventDefault();showLoginForm();};
+
+// Login submit
+const loginFormElem = document.getElementById('loginForm');
+if (loginFormElem) loginFormElem.onsubmit = async function(e) {
+  e.preventDefault();
+  const username = document.getElementById('loginUsername').value.trim();
+  const password = document.getElementById('loginPassword').value.trim();
+  const errDiv = document.getElementById('loginError');
+  errDiv.textContent = '';
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',headers:{'Content-Type':'application/json'},body: JSON.stringify({ username, password })
+    });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || 'Login gagal');
+    localStorage.setItem('userLogin', out.username);
+    showDashboardAfterLogin();
+    location.reload();
+  } catch(err) { errDiv.textContent = err.message; }
+};
+// Register submit
+const regFormElem = document.getElementById('registerForm');
+if (regFormElem) regFormElem.onsubmit = async function(e) {
+  e.preventDefault();
+  const username = document.getElementById('registerUsername').value.trim();
+  const password = document.getElementById('registerPassword').value.trim();
+  const errDiv = document.getElementById('registerError');
+  errDiv.textContent = '';
+  try {
+    const res = await fetch('/api/register', {
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ username, password })
+    });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || 'Register gagal');
+    showLoginForm();
+    document.getElementById('loginError').textContent = 'Pendaftaran sukses. Silakan login.';
+  } catch(err) { errDiv.textContent = err.message; }
+}
+
+// Tambah function logout
+window.logout = function() {
+  localStorage.removeItem('userLogin');
+  location.reload();
+}
+
+// Tambah button logout pada header (setelah settingsBtn, jika login)
+const dashboard = document.querySelector('.dashboard');
+const username = localStorage.getItem('userLogin');
+if (username) {
+  const header = document.querySelector('.header');
+  const logoutBtn = document.createElement('button');
+  logoutBtn.className = 'settings-btn';
+  logoutBtn.innerHTML = '<i class="fas fa-sign-out-alt"></i>';
+  logoutBtn.onclick = window.logout;
+  header.appendChild(logoutBtn);
+}
+
+// Helper fetch wrapper agar auto-logout jika 401 Unauthorized
+async function securedFetch(input, init) {
+  const res = await fetch(input, init);
+  if (res.status === 401) {
+    window.logout();
+    throw new Error('Session expired or unauthorized');
+  }
+  return res;
+}
+
 // Initialize
 init();
 
 function init() {
+  if (!localStorage.getItem('userLogin')) return; // Hanya inisialisasi dashboard jika sudah login
   setupEventListeners();
   loadConfigFromStorage();
   renderRelays();
@@ -152,6 +248,12 @@ function saveSettings() {
 }
 
 async function toggleRelay(relayId) {
+  // Pastikan user sudah login sebelum melakukan request
+  if (!localStorage.getItem('userLogin')) {
+    showNotification('Not Logged In', 'Please login to control relays.');
+    return;
+  }
+
   const relay = relays.find(r => r.id === relayId);
   if (!relay) return;
 
@@ -160,7 +262,7 @@ async function toggleRelay(relayId) {
   console.log(`Toggling relay ${relayId} to ${newStatus}`);
 
   try {
-    const response = await fetch('/api/control', {
+    const response = await securedFetch('/api/control', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ relayId, action: newStatus })
@@ -184,10 +286,16 @@ async function toggleRelay(relayId) {
 }
 
 async function setTimerForRelay(relayId, duration) {
+  // Pastikan user sudah login sebelum melakukan request
+  if (!localStorage.getItem('userLogin')) {
+    showNotification('Not Logged In', 'Please login to set timers.');
+    return;
+  }
+
   console.log(`Setting timer for relay ${relayId}, duration: ${duration} seconds`);
 
   try {
-    const response = await fetch('/api/timer', {
+    const response = await securedFetch('/api/timer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ relayId, duration })
@@ -209,6 +317,9 @@ async function setTimerForRelay(relayId, duration) {
 }
 
 function renderRelays() {
+  // Pastikan hanya render jika user login
+  if (!localStorage.getItem('userLogin')) return;
+
   relayGrid.innerHTML = '';
 
   relays.forEach((relay, index) => {

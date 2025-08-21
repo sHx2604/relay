@@ -152,9 +152,9 @@ app.post('/api/control', (req, res) => {
       if (action === 'off') {
         // Cari semua timer terkait relay ini
         const relayTimers = Object.entries(activeTimers).filter(([_timerId, timer]) => timer.relayId === relayId);
-        relayTimers.forEach(([timerId]) => {
+        relayTimers.forEach(([timerId, timer]) => {
           delete activeTimers[timerId]; // Hapus timer dari backend
-          broadcast({ type: 'timer_removed', timerId }); // Informasi ke semua client untuk hapus timer display
+          broadcast({ type: 'timer_removed', timerId, relayId }); // Informasi ke semua client untuk hapus timer display
         });
       }
 
@@ -243,10 +243,11 @@ app.delete('/api/timer/:id', (req, res) => {
   const timerId = req.params.id;
 
   if (activeTimers[timerId]) {
+    const relayId = activeTimers[timerId].relayId;
     delete activeTimers[timerId];
 
     // Broadcast pembatalan timer
-    broadcast({ type: 'timer_removed', timerId });
+    broadcast({ type: 'timer_removed', timerId, relayId });
 
     return res.json({ success: true });
   }
@@ -289,8 +290,9 @@ setInterval(() => {
 
   // Hapus timer yang sudah selesai
   completedTimers.forEach(timerId => {
+    const relayId = activeTimers[timerId]?.relayId;
+    broadcast({ type: 'timer_completed', timerId, relayId });
     delete activeTimers[timerId];
-    broadcast({ type: 'timer_completed', timerId });
   });
 
   // Broadcast status update jika ada timer yang selesai (relay mati)

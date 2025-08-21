@@ -92,10 +92,12 @@ function setupWebSocket() {
       case 'timer_removed':
       case 'timer_completed':
         // Hapus timer
-        const relayId = data.timerId ?
-          parseInt(data.timerId.split('_')[1]) :
-          data.relayId;
-        clearTimer(relayId);
+        const relayId = typeof data.relayId !== 'undefined'
+          ? data.relayId
+          : (data.timerId ? relays.find(r => r.timerId === data.timerId)?.id : undefined);
+        if (typeof relayId !== 'undefined') {
+          clearTimer(relayId);
+        }
         break;
     }
   };

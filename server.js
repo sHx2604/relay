@@ -147,6 +147,17 @@ app.post('/api/control', (req, res) => {
 
       // Optimistic update - langsung update state di server
       relayStates[relayId] = action;
+
+      // Jika relay dimatikan secara manual, hapus semua timer untuk relay ini
+      if (action === 'off') {
+        // Cari semua timer terkait relay ini
+        const relayTimers = Object.entries(activeTimers).filter(([_timerId, timer]) => timer.relayId === relayId);
+        relayTimers.forEach(([timerId]) => {
+          delete activeTimers[timerId]; // Hapus timer dari backend
+          broadcast({ type: 'timer_removed', timerId }); // Informasi ke semua client untuk hapus timer display
+        });
+      }
+
       console.log(`Optimistic update: relay ${relayId} = ${action}`);
       console.log('Current relay states:', relayStates);
 

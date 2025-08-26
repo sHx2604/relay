@@ -216,19 +216,46 @@ wss.on('connection', async (ws, req) => {
   let userId = null;
   ws.userId = null;
 
+  // Ambil userId dari session cookie jika tersedia
+  if (req.headers.cookie) {
+    const match = req.headers.cookie.match(/connect\.sid=s%3A([^\.]+)\./);
+    // Jika ingin parsing session, bisa gunakan session store, atau abaikan jika tidak perlu
+  }
+
+  // Jika user sudah login (dari session), langsung kirim status awal
+  // (Untuk demo, asumsikan client sudah login dan userId ada di session)
+  // Jika ingin lebih aman, bisa gunakan token/auth message
+
+  // Kirim status awal (init) ke client jika userId diketahui
+  // (Untuk demo, client akan dapat status setelah login)
+
+  // Kirim status awal jika userId diketahui
+  if (ws.userId) {
+    ws.send(JSON.stringify({ type: 'init', ...(await getUserStatus(ws.userId)) }));
+  }
+
   ws.on('message', async (msg) => {
     try {
       const data = JSON.parse(msg);
-      if (data.type === 'auth' && data.userId) {
-        ws.userId = data.userId;
-        // Ambil username dari userId
-        const [userRows] = await db.query('SELECT username FROM users WHERE id=?', [ws.userId]);
-        if (userRows.length) {
-          const username = userRows[0].username;
-          subscribeUserStatusTopic(username);
+      // Dukung auth dengan userId atau username dari client
+      if (data.type === 'auth') {
+        if (data.userId) {
+          ws.userId = data.userId;
+        } else if (data.username) {
+          // Ambil userId dari username
+          const [userRows] = await db.query('SELECT id FROM users WHERE username=?', [data.username]);
+          if (userRows.length) ws.userId = userRows[0].id;
         }
-        // Kirim data awal
-        ws.send(JSON.stringify(await getUserStatus(ws.userId)));
+
+        if (ws.userId) {
+          // Ambil username untuk subscribe ke MQTT
+          const [userRows2] = await db.query('SELECT username FROM users WHERE id=?', [ws.userId]);
+          if (userRows2.length) {
+            subscribeUserStatusTopic(userRows2[0].username);
+          }
+          // Kirim data awal
+          ws.send(JSON.stringify({ type: 'init', ...(await getUserStatus(ws.userId)) }));
+        }
       }
     } catch (e) {}
   });
@@ -275,7 +302,7 @@ app.post('/api/control', requireLogin, async (req, res) => {
     );
   }
   // Broadcast ke user
-  broadcastAllUsers();
+  broadcastToUser(req.session.userId, await getUserStatus(req.session.userId));
   res.json({ success: true });
 });
 
@@ -293,19 +320,27 @@ app.post('/api/timer', requireLogin, async (req, res) => {
   if (!relays.length) return res.status(404).json({ error: 'Relay not found' });
   const relay_id = relays[0].id;
   const end_time = Date.now() + duration * 1000;
-  const [insert] = await db.query('INSERT INTO timers (user_id, relay_id, duration, end_time) VALUES (?, ?, ?, ?)', [req.session.userId, relay_id, duration, end_time]);
-  // Set relay ON juga
+  // Set relay ON sebelum insert timer
   await db.query('UPDATE relays SET status=? WHERE id=?', ['on', relay_id]);
-  // Kirim perintah ke MQTT dengan topic user untuk timer set
+  const [insert] = await db.query('INSERT INTO timers (user_id, relay_id, duration, end_time) VALUES (?, ?, ?, ?)', [req.session.userId, relay_id, duration, end_time]);
+  // Kirim perintah ke MQTT untuk timer set
   const userTimerTopic = getTopic(req.session.username, 'timer/set');
   mqttClient.publish(userTimerTopic, JSON.stringify({ relayId, duration }), (err) => {
     if (err) {
       console.error('Failed to publish timer set:', err);
     }
   });
-  // Broadcast ke user
-  broadcastAllUsers();
-  res.json({ success: true, timerId: insert.insertId });
+  // JUGA PUBLISH perintah ON ke relay
+  const userCommandTopic = getTopic(req.session.username, 'relays/command');
+  mqttClient.publish(userCommandTopic, JSON.stringify({ relays: [relayId], action: 'on' }), (err) => {
+    if (err) {
+      console.error('Failed to publish relay ON command for timer:', err);
+    }
+  });
+  // Kirim status user terbaru ke client yang login
+  const status = await getUserStatus(req.session.userId);
+  broadcastToUser(req.session.userId, status);
+  res.json({ success: true, timerId: insert.insertId, status });
 });
 
 // Cancel timer
@@ -346,7 +381,10 @@ setInterval(async () => {
     await db.query('DELETE FROM timers WHERE id=?', [timer.id]);
   }
   if (timers.length > 0) {
-    broadcastAllUsers();
+    // Gunakan broadcastToUser agar status selalu terkini
+    for (const timer of timers) {
+      await broadcastToUser(timer.user_id, await getUserStatus(timer.user_id));
+    }
   }
 }, 1000);
 

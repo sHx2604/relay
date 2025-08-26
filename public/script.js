@@ -122,10 +122,10 @@ async function securedFetch(input, init) {
 init();
 
 function init() {
-  if (!localStorage.getItem('userLogin')) return; // Hanya inisialisasi dashboard jika sudah login
+  if (!localStorage.getItem('userLogin')) return;
   setupEventListeners();
   loadConfigFromStorage();
-  renderRelays();
+  // renderRelays(); // Jangan render di sini, tunggu data dari server
   setupWebSocket();
 }
 
@@ -137,6 +137,13 @@ function setupWebSocket() {
   ws.onopen = () => {
     console.log('WebSocket connected');
     updateStatusElement(mqttStatus, true, 'MQTT: Connected');
+    // Kirim auth userId ke server agar dapat status user
+    // (Jika server butuh, bisa diaktifkan)
+    // Kirim auth username agar server bisa menautkan socket ke user session
+    const username = localStorage.getItem('userLogin');
+    if (username) {
+      ws.send(JSON.stringify({ type: 'auth', username }));
+    }
   };
 
   ws.onmessage = (event) => {
@@ -145,24 +152,28 @@ function setupWebSocket() {
 
     switch (data.type) {
       case 'init':
-        // Inisialisasi state
-        data.states.forEach((state, i) => {
-          if (i < relays.length) {
-            relays[i].status = state;
-          }
-        });
-        renderRelays();
-        updateDeviceStatus(true);
-        break;
-
       case 'status':
-        // Update status relay
-        data.states.forEach((state, i) => {
-          if (i < relays.length) {
-            relays[i].status = state;
-          }
-        });
+        // Update status relay dan timer dari server
+        if (Array.isArray(data.relays)) {
+          relays = data.relays.map((r, i) => ({
+            id: r.relay_index,
+            name: r.name,
+            status: r.status,
+            timerRemaining: 0 // default, nanti diisi dari timers
+          }));
+        }
+        if (Array.isArray(data.timers)) {
+          data.timers.forEach(timer => {
+            const relay = relays.find(r => r.id === timer.relayId);
+            if (relay) {
+              relay.timerRemaining = timer.remaining;
+              updateTimerDisplay(timer.relayId, timer.remaining);
+            }
+          });
+        }
         renderRelays();
+        relaysRendered = true;
+        updateDeviceStatus(true);
         break;
 
       case 'timer_added':
@@ -256,9 +267,7 @@ async function toggleRelay(relayId) {
 
   const relay = relays.find(r => r.id === relayId);
   if (!relay) return;
-
   const newStatus = relay.status === 'off' ? 'on' : 'off';
-
   console.log(`Toggling relay ${relayId} to ${newStatus}`);
 
   try {
@@ -269,10 +278,9 @@ async function toggleRelay(relayId) {
     });
 
     if (response.ok) {
-      // Optimistic update
-      relay.status = newStatus;
-      renderRelays();
+      // Jangan update relay.status di sini, tunggu update dari server via WebSocket
       showNotification('Success', `${relay.name} turned ${newStatus.toUpperCase()}`);
+      // renderRelays(); // Jangan render di sini, tunggu WebSocket
       console.log(`Relay ${relayId} toggled successfully to ${newStatus}`);
     } else {
       const errorData = await response.json();
@@ -302,8 +310,9 @@ async function setTimerForRelay(relayId, duration) {
     });
 
     if (response.ok) {
-      const data = await response.json();
+      // Tunggu update dari server via WebSocket, jangan update relay di sini
       showNotification('Timer Set', `Timer set for ${formatTime(duration)}`);
+      // renderRelays(); // Jangan render di sini, tunggu WebSocket
       console.log(`Timer set successfully for relay ${relayId}`);
     } else {
       const errorData = await response.json();
@@ -392,34 +401,58 @@ function renderRelays() {
     }
   });
 }
+// Countdown timer (frontend) and helper functions
+// relaysRendered tracks whether we've rendered the UI from server data or fallback
+let relaysRendered = false;
+
+// Decrement timers every second and update UI
+setInterval(() => {
+  relays.forEach(relay => {
+    if (typeof relay.timerRemaining === 'number' && relay.timerRemaining > 0) {
+      relay.timerRemaining = Math.max(0, relay.timerRemaining - 1);
+      updateTimerDisplay(relay.id, relay.timerRemaining);
+      if (relay.timerRemaining === 0) {
+        clearTimer(relay.id);
+        // notify user when timer completes
+        showNotification('Timer Completed', `${relay.name} timer finished`);
+      }
+    }
+  });
+}, 1000);
+
+// Fallback render if WebSocket doesn't send init/status within 2s
+setTimeout(() => {
+  if (!relaysRendered) {
+    renderRelays();
+    relaysRendered = true;
+  }
+}, 2000);
 
 function updateTimerDisplay(relayId, seconds) {
   const timerDisplay = document.getElementById(`timer-${relayId}`);
   if (!timerDisplay) return;
 
   timerDisplay.classList.add('active');
-  timerDisplay.querySelector('.timer-value').textContent = formatTime(seconds);
+  const valueEl = timerDisplay.querySelector('.timer-value');
+  if (valueEl) valueEl.textContent = formatTime(seconds);
 }
 
 function clearTimer(relayId) {
   const relay = relays.find(r => r.id === relayId);
-  if (relay) {
-    relay.timerRemaining = 0;
-    const timerDisplay = document.getElementById(`timer-${relayId}`);
-    if (timerDisplay) {
-      timerDisplay.classList.remove('active');
-    }
-  }
+  if (relay) relay.timerRemaining = 0;
+  const timerDisplay = document.getElementById(`timer-${relayId}`);
+  if (timerDisplay) timerDisplay.classList.remove('active');
 }
 
 function updateStatusElement(element, isGood, text) {
+  if (!element) return;
   const icon = element.querySelector('i');
   const textSpan = element.querySelector('span');
 
-  textSpan.textContent = text;
+  if (textSpan) textSpan.textContent = text;
   element.style.background = isGood ? 'rgba(0, 200, 83, 0.1)' : 'rgba(255, 61, 0, 0.1)';
   element.style.borderColor = isGood ? 'rgba(0, 200, 83, 0.2)' : 'rgba(255, 61, 0, 0.2)';
-  icon.style.color = isGood ? '#00c853' : '#ff3d00';
+  if (icon) icon.style.color = isGood ? '#00c853' : '#ff3d00';
 }
 
 function updateDeviceStatus(online) {
@@ -434,6 +467,7 @@ function formatTime(seconds) {
 }
 
 function showModal(modal) {
+  if (!modal) return;
   if (modal === settingsModal) {
     document.getElementById('mqttBroker').value = config.mqttBroker;
     document.getElementById('mqttPort').value = config.mqttPort;
@@ -444,11 +478,14 @@ function showModal(modal) {
 }
 
 function hideModal(modal) {
+  if (!modal) return;
   modal.classList.remove('active');
 }
 
 function showNotification(title, message) {
-  document.getElementById('modalTitle').textContent = title;
-  document.getElementById('modalMessage').textContent = message;
-  notificationModal.classList.add('active');
+  const titleEl = document.getElementById('modalTitle');
+  const msgEl = document.getElementById('modalMessage');
+  if (titleEl) titleEl.textContent = title;
+  if (msgEl) msgEl.textContent = message;
+  if (notificationModal) notificationModal.classList.add('active');
 }

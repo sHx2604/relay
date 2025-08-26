@@ -9,14 +9,18 @@
 </head>
 <body>
     <div class="login-container" id="loginContainer" style="display:none">
+        <div class="logo" style="justify-content:center;margin-bottom:32px;">
+            <i class="fas fa-microchip"></i>
+            <h1 style="font-size:1.4rem;font-weight:700;letter-spacing:-.5px;">Zeuss<span>Relay</span> Controller</h1>
+        </div>
         <form id="loginForm">
             <h2>LOGIN</h2>
             <div class="form-group">
-                <label for="loginUsername">Username</label>
+                <label for="loginUsername"><i class="fas fa-user"></i> Username</label>
                 <input type="text" id="loginUsername" required />
             </div>
             <div class="form-group">
-                <label for="loginPassword">Password</label>
+                <label for="loginPassword"><i class="fas fa-lock"></i> Password</label>
                 <input type="password" id="loginPassword" required />
             </div>
             <button type="submit">Login</button>
@@ -26,11 +30,11 @@
         <form id="registerForm" style="display:none">
             <h2>REGISTER</h2>
             <div class="form-group">
-                <label for="registerUsername">Username</label>
+                <label for="registerUsername"><i class="fas fa-user-plus"></i> Username</label>
                 <input type="text" id="registerUsername" required />
             </div>
             <div class="form-group">
-                <label for="registerPassword">Password</label>
+                <label for="registerPassword"><i class="fas fa-lock"></i> Password</label>
                 <input type="password" id="registerPassword" required />
             </div>
             <button type="submit">Register</button>
